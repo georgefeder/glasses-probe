@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glasses Probe v2</title>
+<title>Glasses Probe v3</title>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; padding: 12px; background: #000; color: #e8e8e8; font: 18px/1.35 -apple-system, system-ui, sans-serif; }
@@ -21,7 +21,7 @@
 </style>
 </head>
 <body>
-<h1>Glasses Probe v2</h1>
+<h1>Glasses Probe v3</h1>
 <div id="stamp" class="k"></div>
 
 <h2>Locale and region</h2><div id="locale"></div>
@@ -65,7 +65,7 @@ const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", 
 function collect() {
   const dtf = Intl.DateTimeFormat().resolvedOptions();
   const loc = safe(() => new Intl.Locale(navigator.language).maximize());
-  report.version = "v2";
+  report.version = "v3";
   report.time = new Date().toString();
   report.locale = {
     language: navigator.language,
@@ -118,7 +118,7 @@ function globalsProbe() {
     const w = f.contentWindow;
     const base = new Set(Object.getOwnPropertyNames(w));
     const ours = new Set([...document.querySelectorAll("[id]")].map(e => e.id).concat(["collect", "globalsProbe", "collectAll", "logEvt"]));
-    const extra = Object.getOwnPropertyNames(window).filter(k => !base.has(k) && !ours.has(k));
+    const extra = Object.getOwnPropertyNames(window).filter(k => !base.has(k) && !ours.has(k) && !/^\d+$/.test(k));
     const nb = new Set(Object.getOwnPropertyNames(w.navigator));
     const npb = new Set(Object.getOwnPropertyNames(Object.getPrototypeOf(w.navigator)));
     const navExtra = Object.getOwnPropertyNames(navigator).filter(k => !nb.has(k))
@@ -126,7 +126,29 @@ function globalsProbe() {
     const names = ["Android", "AndroidBridge", "ReactNativeWebView", "webkit", "chrome", "meta", "Meta", "wearables", "MetaWearables", "bridge", "NativeBridge", "glasses"];
     const bridges = {};
     names.forEach(n => { bridges[n] = typeof window[n]; });
-    out = { extraWindowProps: extra, extraNavigatorProps: navExtra, bridges };
+    // Names only. Never call anything and never read getter values.
+    const describe = o => {
+      try {
+        const t = typeof o;
+        if (o === null || (t !== "object" && t !== "function")) return t;
+        const members = new Set();
+        let p = o, d = 0;
+        while (p && p !== Object.prototype && p !== Function.prototype && d < 3) {
+          Object.getOwnPropertyNames(p).forEach(n => {
+            if (n === "constructor") return;
+            const desc = Object.getOwnPropertyDescriptor(p, n);
+            members.add(n + (desc && "value" in desc ? (typeof desc.value === "function" ? "()" : "") : " [accessor]"));
+          });
+          p = Object.getPrototypeOf(p);
+          d++;
+        }
+        try { for (const n in o) members.add(n + " [enum]"); } catch (e) {}
+        return { type: t, members: [...members] };
+      } catch (e) { return "error: " + e.message; }
+    };
+    const detail = {};
+    extra.filter(k => k.startsWith("__")).forEach(k => { detail[k] = describe(window[k]); });
+    out = { extraWindowProps: extra, extraNavigatorProps: navExtra, bridges, detail };
   } catch (e) {
     out = { error: e.message };
   }
@@ -138,6 +160,7 @@ async function collectAll() {
   collect();
   report.globals = globalsProbe();
   const g = report.globals;
+  if (g.detail) { report.bridgeDetail = g.detail; delete g.detail; }
   $("globals").innerHTML = g.error ? `<span class="warn">${esc(g.error)}</span>` :
     row("window extras", g.extraWindowProps.length) +
     `<div class="small">${esc(g.extraWindowProps.join(", ") || "none")}</div>` +
