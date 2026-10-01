@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glasses Probe</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 12px; background: #000; color: #e8e8e8; font: 18px/1.35 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  h2 { font-size: 16px; margin: 14px 0 4px; color: #6cb6ff; text-transform: uppercase; letter-spacing: .05em; }
+  .row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid #222; padding: 3px 0; }
+  .k { color: #9aa; flex: 0 0 auto; }
+  .v { text-align: right; word-break: break-all; }
+  button { background: #1d4ed8; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; font-size: 18px; margin: 6px 6px 0 0; }
+  #log { font: 15px/1.3 ui-monospace, monospace; color: #9f9; white-space: pre-wrap; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 13px; color: #cfc; }
+  .warn { color: #fbbf24; }
+</style>
+</head>
+<body>
+<h1>Glasses Probe</h1>
+<div id="stamp" class="k"></div>
+
+<h2>Locale and region</h2><div id="locale"></div>
+<h2>Screen</h2><div id="screen"></div>
+<h2>Environment</h2><div id="env"></div>
+<h2>Network (optional)</h2>
+<button id="ipbtn">Check IP region</button>
+<div class="k">Sends your IP to ipapi.co. Only runs when pressed.</div>
+<div id="ip"></div>
+<h2>Input events (try the band, handwriting, taps)</h2>
+<div id="log">waiting for input...</div>
+<h2>Full report</h2>
+<button id="showjson">Show JSON</button><button id="copyjson">Copy JSON</button>
+<pre id="json"></pre>
+
+<script>
+const report = {};
+const $ = id => document.getElementById(id);
+const row = (k, v) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+const safe = fn => { try { return fn(); } catch (e) { return "error: " + e.message; } };
+
+function collect() {
+  const dtf = Intl.DateTimeFormat().resolvedOptions();
+  const loc = safe(() => new Intl.Locale(navigator.language).maximize());
+  report.time = new Date().toString();
+  report.locale = {
+    language: navigator.language,
+    languages: navigator.languages ? [...navigator.languages] : null,
+    intlLocale: dtf.locale,
+    inferredRegion: loc && loc.region,
+    timeZone: dtf.timeZone,
+    utcOffsetMin: -new Date().getTimezoneOffset(),
+    calendar: dtf.calendar,
+    numbering: dtf.numberingSystem,
+    sampleDate: new Date(2026, 9, 1).toLocaleDateString(),
+    sampleCurrency: safe(() => (1234.5).toLocaleString(undefined, { style: "currency", currency: "GBP" })),
+  };
+  report.screen = {
+    screen: `${screen.width}x${screen.height}`,
+    inner: `${innerWidth}x${innerHeight}`,
+    dpr: devicePixelRatio,
+    orientation: safe(() => screen.orientation && screen.orientation.type),
+    colorDepth: screen.colorDepth,
+  };
+  report.env = {
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    online: navigator.onLine,
+    cores: navigator.hardwareConcurrency,
+    memoryGB: navigator.deviceMemory,
+    touchPoints: navigator.maxTouchPoints,
+    cookies: navigator.cookieEnabled,
+    dnt: navigator.doNotTrack,
+    connection: safe(() => navigator.connection ? { type: navigator.connection.effectiveType, down: navigator.connection.downlink } : "n/a"),
+    referrer: document.referrer || "none",
+    pageUrl: location.href,
+    hasSpeech: "SpeechRecognition" in window || "webkitSpeechRecognition" in window,
+    hasGamepad: !!navigator.getGamepads,
+  };
+  $("stamp").textContent = report.time;
+  $("locale").innerHTML = Object.entries(report.locale).map(([k, v]) => row(k, JSON.stringify(v))).join("");
+  $("screen").innerHTML = Object.entries(report.screen).map(([k, v]) => row(k, v)).join("");
+  $("env").innerHTML = Object.entries(report.env).map(([k, v]) => row(k, typeof v === "object" ? JSON.stringify(v) : v)).join("");
+}
+
+// Log every input event so we can see what the band or handwriting actually sends
+const lines = [];
+function logEvt(e) {
+  const d = e.key ? `key=${e.key} code=${e.code}` :
+            e.deltaY !== undefined && e.type === "wheel" ? `dx=${e.deltaX} dy=${e.deltaY}` :
+            e.clientX !== undefined ? `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}` : "";
+  lines.unshift(`${new Date().toLocaleTimeString()} ${e.type} ${d}`);
+  lines.length = Math.min(lines.length, 14);
+  $("log").textContent = lines.join("\n");
+  report.lastEvents = lines.slice();
+}
+["keydown", "keyup", "wheel", "pointerdown", "pointerup", "click", "touchstart", "contextmenu", "input", "beforeinput"]
+  .forEach(t => addEventListener(t, logEvt, { passive: true, capture: true }));
+addEventListener("gamepadconnected", e => { lines.unshift("gamepad: " + e.gamepad.id); $("log").textContent = lines.join("\n"); });
+
+$("ipbtn").onclick = async () => {
+  $("ip").textContent = "checking...";
+  try {
+    const r = await fetch("https://ipapi.co/json/");
+    const j = await r.json();
+    report.ip = { country: j.country_code, region: j.region, city: j.city, org: j.org, ip: j.ip };
+    $("ip").innerHTML = Object.entries(report.ip).map(([k, v]) => row(k, v)).join("");
+  } catch (e) {
+    $("ip").innerHTML = `<span class="warn">failed: ${e.message}</span>`;
+  }
+};
+$("showjson").onclick = () => { collect(); $("json").textContent = JSON.stringify(report, null, 2); };
+$("copyjson").onclick = async () => {
+  collect();
+  const t = JSON.stringify(report, null, 2);
+  try { await navigator.clipboard.writeText(t); $("json").textContent = "copied\n" + t; }
+  catch (e) { $("json").textContent = "clipboard blocked, text below\n" + t; }
+};
+
+collect();
+</script>
+</body>
+</html>
