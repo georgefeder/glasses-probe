@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glasses Probe</title>
+<title>Glasses Probe v2</title>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; padding: 12px; background: #000; color: #e8e8e8; font: 18px/1.35 -apple-system, system-ui, sans-serif; }
@@ -13,24 +13,40 @@
   .k { color: #9aa; flex: 0 0 auto; }
   .v { text-align: right; word-break: break-all; }
   button { background: #1d4ed8; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; font-size: 18px; margin: 6px 6px 0 0; }
+  input, textarea { width: 100%; box-sizing: border-box; background: #111; color: #fff; border: 1px solid #444; border-radius: 8px; padding: 8px; font-size: 18px; margin-top: 6px; }
   #log { font: 15px/1.3 ui-monospace, monospace; color: #9f9; white-space: pre-wrap; }
   pre { white-space: pre-wrap; word-break: break-all; font-size: 13px; color: #cfc; }
+  .small { font: 13px/1.3 ui-monospace, monospace; color: #fc9; word-break: break-all; }
   .warn { color: #fbbf24; }
 </style>
 </head>
 <body>
-<h1>Glasses Probe</h1>
+<h1>Glasses Probe v2</h1>
 <div id="stamp" class="k"></div>
 
 <h2>Locale and region</h2><div id="locale"></div>
 <h2>Screen</h2><div id="screen"></div>
 <h2>Environment</h2><div id="env"></div>
+
+<h2>Injected globals</h2>
+<div class="k">Window and navigator properties that a clean iframe does not have. Meta bridges would show up here.</div>
+<div id="globals"></div>
+
+<h2>Permissions and devices</h2><div id="perms"></div>
+
+<h2>Text input test</h2>
+<div class="k">Focus a box, then use the band, handwriting or dictation. Watch the log below.</div>
+<input id="tin" placeholder="single line box">
+<textarea id="tta" rows="2" placeholder="multi line box"></textarea>
+
 <h2>Network (optional)</h2>
 <button id="ipbtn">Check IP region</button>
 <div class="k">Sends your IP to ipapi.co. Only runs when pressed.</div>
 <div id="ip"></div>
-<h2>Input events (try the band, handwriting, taps)</h2>
+
+<h2>Input events</h2>
 <div id="log">waiting for input...</div>
+
 <h2>Full report</h2>
 <button id="showjson">Show JSON</button><button id="copyjson">Copy JSON</button>
 <pre id="json"></pre>
@@ -40,10 +56,12 @@ const report = {};
 const $ = id => document.getElementById(id);
 const row = (k, v) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`;
 const safe = fn => { try { return fn(); } catch (e) { return "error: " + e.message; } };
+const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
 function collect() {
   const dtf = Intl.DateTimeFormat().resolvedOptions();
   const loc = safe(() => new Intl.Locale(navigator.language).maximize());
+  report.version = "v2";
   report.time = new Date().toString();
   report.locale = {
     language: navigator.language,
@@ -79,24 +97,90 @@ function collect() {
     hasSpeech: "SpeechRecognition" in window || "webkitSpeechRecognition" in window,
     hasGamepad: !!navigator.getGamepads,
   };
+  report.textTest = { input: $("tin").value, textarea: $("tta").value };
   $("stamp").textContent = report.time;
-  $("locale").innerHTML = Object.entries(report.locale).map(([k, v]) => row(k, JSON.stringify(v))).join("");
+  $("locale").innerHTML = Object.entries(report.locale).map(([k, v]) => row(k, esc(JSON.stringify(v)))).join("");
   $("screen").innerHTML = Object.entries(report.screen).map(([k, v]) => row(k, v)).join("");
-  $("env").innerHTML = Object.entries(report.env).map(([k, v]) => row(k, typeof v === "object" ? JSON.stringify(v) : v)).join("");
+  $("env").innerHTML = Object.entries(report.env).map(([k, v]) => row(k, esc(typeof v === "object" ? JSON.stringify(v) : v))).join("");
 }
 
-// Log every input event so we can see what the band or handwriting actually sends
+// Compare this window against a pristine iframe to spot anything the host injected
+function globalsProbe() {
+  const f = document.createElement("iframe");
+  f.style.display = "none";
+  document.body.appendChild(f);
+  let out;
+  try {
+    const w = f.contentWindow;
+    const base = new Set(Object.getOwnPropertyNames(w));
+    const ours = new Set([...document.querySelectorAll("[id]")].map(e => e.id).concat(["collect", "globalsProbe", "collectAll", "logEvt"]));
+    const extra = Object.getOwnPropertyNames(window).filter(k => !base.has(k) && !ours.has(k));
+    const nb = new Set(Object.getOwnPropertyNames(w.navigator));
+    const npb = new Set(Object.getOwnPropertyNames(Object.getPrototypeOf(w.navigator)));
+    const navExtra = Object.getOwnPropertyNames(navigator).filter(k => !nb.has(k))
+      .concat(Object.getOwnPropertyNames(Object.getPrototypeOf(navigator)).filter(k => !npb.has(k)));
+    const names = ["Android", "AndroidBridge", "ReactNativeWebView", "webkit", "chrome", "meta", "Meta", "wearables", "MetaWearables", "bridge", "NativeBridge", "glasses"];
+    const bridges = {};
+    names.forEach(n => { bridges[n] = typeof window[n]; });
+    out = { extraWindowProps: extra, extraNavigatorProps: navExtra, bridges };
+  } catch (e) {
+    out = { error: e.message };
+  }
+  f.remove();
+  return out;
+}
+
+async function collectAll() {
+  collect();
+  report.globals = globalsProbe();
+  const g = report.globals;
+  $("globals").innerHTML = g.error ? `<span class="warn">${esc(g.error)}</span>` :
+    row("window extras", g.extraWindowProps.length) +
+    `<div class="small">${esc(g.extraWindowProps.join(", ") || "none")}</div>` +
+    row("navigator extras", g.extraNavigatorProps.length) +
+    `<div class="small">${esc(g.extraNavigatorProps.join(", ") || "none")}</div>` +
+    row("bridge names", esc(Object.entries(g.bridges).filter(([, t]) => t !== "undefined").map(([n, t]) => n + ":" + t).join(", ") || "none found"));
+
+  const perms = {};
+  for (const n of ["microphone", "camera", "clipboard-read", "clipboard-write", "geolocation", "notifications"]) {
+    try { perms[n] = (await navigator.permissions.query({ name: n })).state; } catch (e) { perms[n] = "n/a"; }
+  }
+  let devices = "n/a";
+  try {
+    const d = await navigator.mediaDevices.enumerateDevices();
+    devices = d.reduce((a, x) => (a[x.kind] = (a[x.kind] || 0) + 1, a), {});
+  } catch (e) { devices = "error: " + e.message; }
+  let uaData = "n/a";
+  try {
+    if (navigator.userAgentData) {
+      uaData = await navigator.userAgentData.getHighEntropyValues(["model", "platformVersion", "architecture", "fullVersionList"]);
+    }
+  } catch (e) { uaData = "error: " + e.message; }
+  let storage = "n/a";
+  try {
+    const s = await navigator.storage.estimate();
+    storage = { usageMB: Math.round(s.usage / 1048576), quotaMB: Math.round(s.quota / 1048576) };
+  } catch (e) { storage = "error: " + e.message; }
+  report.perms = { permissions: perms, mediaDevices: devices, userAgentData: uaData, storage };
+  $("perms").innerHTML = Object.entries(report.perms).map(([k, v]) => row(k, esc(JSON.stringify(v)))).join("");
+}
+
+// Log every input event so we can see what the band, handwriting or IME actually sends
 const lines = [];
 function logEvt(e) {
-  const d = e.key ? `key=${e.key} code=${e.code}` :
-            e.deltaY !== undefined && e.type === "wheel" ? `dx=${e.deltaX} dy=${e.deltaY}` :
-            e.clientX !== undefined ? `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}` : "";
-  lines.unshift(`${new Date().toLocaleTimeString()} ${e.type} ${d}`);
-  lines.length = Math.min(lines.length, 14);
+  let d = "";
+  if (e.key) d = `key=${e.key} code=${e.code}`;
+  else if (e.type === "wheel") d = `dx=${e.deltaX} dy=${e.deltaY}`;
+  else if (e.data !== undefined && e.data !== null) d = `data=${JSON.stringify(e.data)}${e.inputType ? " " + e.inputType : ""}`;
+  else if (e.clientX !== undefined) d = `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}`;
+  const tgt = e.target && e.target.id ? ` #${e.target.id}` : "";
+  lines.unshift(`${new Date().toLocaleTimeString()} ${e.type}${tgt} ${d}`);
+  lines.length = Math.min(lines.length, 18);
   $("log").textContent = lines.join("\n");
   report.lastEvents = lines.slice();
 }
-["keydown", "keyup", "wheel", "pointerdown", "pointerup", "click", "touchstart", "contextmenu", "input", "beforeinput"]
+["keydown", "keyup", "wheel", "pointerdown", "pointerup", "click", "touchstart", "contextmenu",
+ "input", "beforeinput", "focus", "blur", "compositionstart", "compositionupdate", "compositionend"]
   .forEach(t => addEventListener(t, logEvt, { passive: true, capture: true }));
 addEventListener("gamepadconnected", e => { lines.unshift("gamepad: " + e.gamepad.id); $("log").textContent = lines.join("\n"); });
 
@@ -106,20 +190,20 @@ $("ipbtn").onclick = async () => {
     const r = await fetch("https://ipapi.co/json/");
     const j = await r.json();
     report.ip = { country: j.country_code, region: j.region, city: j.city, org: j.org, ip: j.ip };
-    $("ip").innerHTML = Object.entries(report.ip).map(([k, v]) => row(k, v)).join("");
+    $("ip").innerHTML = Object.entries(report.ip).map(([k, v]) => row(k, esc(v))).join("");
   } catch (e) {
-    $("ip").innerHTML = `<span class="warn">failed: ${e.message}</span>`;
+    $("ip").innerHTML = `<span class="warn">failed: ${esc(e.message)}</span>`;
   }
 };
-$("showjson").onclick = () => { collect(); $("json").textContent = JSON.stringify(report, null, 2); };
+$("showjson").onclick = async () => { await collectAll(); $("json").textContent = JSON.stringify(report, null, 2); };
 $("copyjson").onclick = async () => {
-  collect();
+  await collectAll();
   const t = JSON.stringify(report, null, 2);
   try { await navigator.clipboard.writeText(t); $("json").textContent = "copied\n" + t; }
   catch (e) { $("json").textContent = "clipboard blocked, text below\n" + t; }
 };
 
-collect();
+collectAll();
 </script>
 </body>
 </html>
