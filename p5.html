@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glasses Probe v5</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 12px; background: #000; color: #e8e8e8; font: 18px/1.35 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  h2 { font-size: 16px; margin: 14px 0 4px; color: #6cb6ff; text-transform: uppercase; letter-spacing: .05em; }
+  .row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid #222; padding: 3px 0; }
+  .k { color: #9aa; flex: 0 0 auto; }
+  .v { text-align: right; word-break: break-all; }
+  button { background: #1d4ed8; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; font-size: 18px; margin: 6px 6px 0 0; }
+  input, textarea { width: 100%; box-sizing: border-box; background: #111; color: #fff; border: 1px solid #444; border-radius: 8px; padding: 8px; font-size: 18px; margin-top: 6px; }
+  #log { font: 15px/1.3 ui-monospace, monospace; color: #9f9; white-space: pre-wrap; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 13px; color: #cfc; }
+  .small { font: 13px/1.3 ui-monospace, monospace; color: #fc9; word-break: break-all; }
+  .warn { color: #fbbf24; }
+</style>
+</head>
+<body>
+<h1>Glasses Probe v5</h1>
+<div id="stamp" class="k"></div>
+
+<h2>Locale and region</h2><div id="locale"></div>
+<h2>Screen</h2><div id="screen"></div>
+<h2>Environment</h2><div id="env"></div>
+
+<h2>Injected globals</h2>
+<div class="k">Window and navigator properties that a clean iframe does not have. Meta bridges would show up here.</div>
+<div id="globals"></div>
+
+<h2>Permissions and devices</h2><div id="perms"></div>
+
+<h2>Text input test</h2>
+<div class="k">Focus a box, then use the band, handwriting or dictation. Watch the log below.</div>
+<input id="tin" placeholder="single line box">
+<textarea id="tta" rows="2" placeholder="multi line box"></textarea>
+
+<h2>Network (optional)</h2>
+<button id="ipbtn">Check IP region</button>
+<div class="k">Sends your IP to ipapi.co. Only runs when pressed.</div>
+<div id="ip"></div>
+
+<h2>Input events</h2>
+<div id="log">waiting for input...</div>
+
+<h2>Bridge calls (native)</h2>
+<div class="k">Calls into Meta's bridge. Order: getVersion, startHandwriting, try writing in a box above, stopHandwriting.</div>
+<button id="b_ver">getVersion</button><button id="b_start">startHandwriting</button><button id="b_stop">stopHandwriting</button>
+<div id="bcalls" class="small"></div>
+
+<h2>Send report</h2>
+<button id="sendbtn">Send report</button>
+<div id="sendstat" class="k">needs ?t=topic in the URL</div>
+
+<h2>Full report</h2>
+<button id="showjson">Show JSON</button><button id="copyjson">Copy JSON</button>
+<pre id="json"></pre>
+
+<script>
+const report = {};
+const $ = id => document.getElementById(id);
+const row = (k, v) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+const safe = fn => { try { return fn(); } catch (e) { return "error: " + e.message; } };
+const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+function collect() {
+  const dtf = Intl.DateTimeFormat().resolvedOptions();
+  const loc = safe(() => new Intl.Locale(navigator.language).maximize());
+  report.version = "v5";
+  report.time = new Date().toString();
+  report.locale = {
+    language: navigator.language,
+    languages: navigator.languages ? [...navigator.languages] : null,
+    intlLocale: dtf.locale,
+    inferredRegion: loc && loc.region,
+    timeZone: dtf.timeZone,
+    utcOffsetMin: -new Date().getTimezoneOffset(),
+    calendar: dtf.calendar,
+    numbering: dtf.numberingSystem,
+    sampleDate: new Date(2026, 9, 1).toLocaleDateString(),
+    sampleCurrency: safe(() => (1234.5).toLocaleString(undefined, { style: "currency", currency: "GBP" })),
+  };
+  report.screen = {
+    screen: `${screen.width}x${screen.height}`,
+    inner: `${innerWidth}x${innerHeight}`,
+    dpr: devicePixelRatio,
+    orientation: safe(() => screen.orientation && screen.orientation.type),
+    colorDepth: screen.colorDepth,
+  };
+  report.env = {
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    online: navigator.onLine,
+    cores: navigator.hardwareConcurrency,
+    memoryGB: navigator.deviceMemory,
+    touchPoints: navigator.maxTouchPoints,
+    cookies: navigator.cookieEnabled,
+    dnt: navigator.doNotTrack,
+    connection: safe(() => navigator.connection ? { type: navigator.connection.effectiveType, down: navigator.connection.downlink } : "n/a"),
+    referrer: document.referrer || "none",
+    pageUrl: location.href,
+    hasSpeech: "SpeechRecognition" in window || "webkitSpeechRecognition" in window,
+    hasGamepad: !!navigator.getGamepads,
+  };
+  report.textTest = { input: $("tin").value, textarea: $("tta").value };
+  $("stamp").textContent = report.time;
+  $("locale").innerHTML = Object.entries(report.locale).map(([k, v]) => row(k, esc(JSON.stringify(v)))).join("");
+  $("screen").innerHTML = Object.entries(report.screen).map(([k, v]) => row(k, v)).join("");
+  $("env").innerHTML = Object.entries(report.env).map(([k, v]) => row(k, esc(typeof v === "object" ? JSON.stringify(v) : v))).join("");
+}
+
+// Compare this window against a pristine iframe to spot anything the host injected
+function globalsProbe() {
+  const f = document.createElement("iframe");
+  f.style.display = "none";
+  document.body.appendChild(f);
+  let out;
+  try {
+    const w = f.contentWindow;
+    const base = new Set(Object.getOwnPropertyNames(w));
+    const ours = new Set([...document.querySelectorAll("[id]")].map(e => e.id).concat(["collect", "globalsProbe", "collectAll", "logEvt", "sendReport", "callBridge", "ntfySend", "wrapInject"]));
+    const extra = Object.getOwnPropertyNames(window).filter(k => !base.has(k) && !ours.has(k) && !/^\d+$/.test(k));
+    const nb = new Set(Object.getOwnPropertyNames(w.navigator));
+    const npb = new Set(Object.getOwnPropertyNames(Object.getPrototypeOf(w.navigator)));
+    const navExtra = Object.getOwnPropertyNames(navigator).filter(k => !nb.has(k))
+      .concat(Object.getOwnPropertyNames(Object.getPrototypeOf(navigator)).filter(k => !npb.has(k)));
+    const names = ["Android", "AndroidBridge", "ReactNativeWebView", "webkit", "chrome", "meta", "Meta", "wearables", "MetaWearables", "bridge", "NativeBridge", "glasses"];
+    const bridges = {};
+    names.forEach(n => { bridges[n] = typeof window[n]; });
+    // Names only. Never call anything and never read getter values.
+    const describe = o => {
+      try {
+        const t = typeof o;
+        if (o === null || (t !== "object" && t !== "function")) return t;
+        const members = new Set();
+        let p = o, d = 0;
+        while (p && p !== Object.prototype && p !== Function.prototype && d < 3) {
+          Object.getOwnPropertyNames(p).forEach(n => {
+            if (n === "constructor") return;
+            const desc = Object.getOwnPropertyDescriptor(p, n);
+            members.add(n + (desc && "value" in desc ? (typeof desc.value === "function" ? "()" : "") : " [accessor]"));
+          });
+          p = Object.getPrototypeOf(p);
+          d++;
+        }
+        try { for (const n in o) members.add(n + " [enum]"); } catch (e) {}
+        return { type: t, members: [...members] };
+      } catch (e) { return "error: " + e.message; }
+    };
+    const detail = {};
+    extra.filter(k => k.startsWith("__")).forEach(k => { detail[k] = describe(window[k]); });
+    out = { extraWindowProps: extra, extraNavigatorProps: navExtra, bridges, detail };
+  } catch (e) {
+    out = { error: e.message };
+  }
+  f.remove();
+  return out;
+}
+
+async function collectAll() {
+  collect();
+  report.globals = globalsProbe();
+  const g = report.globals;
+  if (g.detail) { report.bridgeDetail = g.detail; delete g.detail; }
+  $("globals").innerHTML = g.error ? `<span class="warn">${esc(g.error)}</span>` :
+    row("window extras", g.extraWindowProps.length) +
+    `<div class="small">${esc(g.extraWindowProps.join(", ") || "none")}</div>` +
+    row("navigator extras", g.extraNavigatorProps.length) +
+    `<div class="small">${esc(g.extraNavigatorProps.join(", ") || "none")}</div>` +
+    row("bridge names", esc(Object.entries(g.bridges).filter(([, t]) => t !== "undefined").map(([n, t]) => n + ":" + t).join(", ") || "none found"));
+
+  const perms = {};
+  for (const n of ["microphone", "camera", "clipboard-read", "clipboard-write", "geolocation", "notifications"]) {
+    try { perms[n] = (await navigator.permissions.query({ name: n })).state; } catch (e) { perms[n] = "n/a"; }
+  }
+  let devices = "n/a";
+  try {
+    const d = await navigator.mediaDevices.enumerateDevices();
+    devices = d.reduce((a, x) => (a[x.kind] = (a[x.kind] || 0) + 1, a), {});
+  } catch (e) { devices = "error: " + e.message; }
+  let uaData = "n/a";
+  try {
+    if (navigator.userAgentData) {
+      uaData = await navigator.userAgentData.getHighEntropyValues(["model", "platformVersion", "architecture", "fullVersionList"]);
+    }
+  } catch (e) { uaData = "error: " + e.message; }
+  let storage = "n/a";
+  try {
+    const s = await navigator.storage.estimate();
+    storage = { usageMB: Math.round(s.usage / 1048576), quotaMB: Math.round(s.quota / 1048576) };
+  } catch (e) { storage = "error: " + e.message; }
+  report.perms = { permissions: perms, mediaDevices: devices, userAgentData: uaData, storage };
+  $("perms").innerHTML = Object.entries(report.perms).map(([k, v]) => row(k, esc(JSON.stringify(v)))).join("");
+}
+
+// Log every input event so we can see what the band, handwriting or IME actually sends
+const lines = [];
+function logEvt(e) {
+  let d = "";
+  if (e.key) d = `key=${e.key} code=${e.code}`;
+  else if (e.type === "wheel") d = `dx=${e.deltaX} dy=${e.deltaY}`;
+  else if (e.data !== undefined && e.data !== null) d = `data=${JSON.stringify(e.data)}${e.inputType ? " " + e.inputType : ""}`;
+  else if (e.clientX !== undefined) d = `x=${Math.round(e.clientX)} y=${Math.round(e.clientY)}`;
+  const tgt = e.target && e.target.id ? ` #${e.target.id}` : "";
+  lines.unshift(`${new Date().toLocaleTimeString()} ${e.type}${tgt} ${d}`);
+  lines.length = Math.min(lines.length, 18);
+  $("log").textContent = lines.join("\n");
+  report.lastEvents = lines.slice();
+}
+["keydown", "keyup", "wheel", "pointerdown", "pointerup", "click", "touchstart", "contextmenu",
+ "input", "beforeinput", "focus", "blur", "compositionstart", "compositionupdate", "compositionend"]
+  .forEach(t => addEventListener(t, logEvt, { passive: true, capture: true }));
+addEventListener("gamepadconnected", e => { lines.unshift("gamepad: " + e.gamepad.id); $("log").textContent = lines.join("\n"); });
+
+$("ipbtn").onclick = async () => {
+  $("ip").textContent = "checking...";
+  try {
+    const r = await fetch("https://ipapi.co/json/");
+    const j = await r.json();
+    report.ip = { country: j.country_code, region: j.region, city: j.city, org: j.org, ip: j.ip };
+    $("ip").innerHTML = Object.entries(report.ip).map(([k, v]) => row(k, esc(v))).join("");
+  } catch (e) {
+    $("ip").innerHTML = `<span class="warn">failed: ${esc(e.message)}</span>`;
+  }
+};
+$("showjson").onclick = async () => { await collectAll(); $("json").textContent = JSON.stringify(report, null, 2); };
+$("copyjson").onclick = async () => {
+  await collectAll();
+  const t = JSON.stringify(report, null, 2);
+  try { await navigator.clipboard.writeText(t); $("json").textContent = "copied\n" + t; }
+  catch (e) { $("json").textContent = "clipboard blocked, text below\n" + t; }
+};
+
+// Send the report to a public ntfy.sh topic so it can be read from another device.
+// The topic comes from the URL (?t=...), so it never lives in the public repo.
+const params = new URLSearchParams(location.search);
+const topic = (params.get("t") || "").replace(/[^A-Za-z0-9_-]/g, "");
+async function sendReport() {
+  const st = $("sendstat");
+  if (!topic) { st.innerHTML = '<span class="warn">no topic, open the page with ?t=yourtopic</span>'; return; }
+  await collectAll();
+  const parts = [];
+  Object.entries(report).forEach(([k, v]) => {
+    const s = typeof v === "string" ? v : JSON.stringify(v);
+    const n = Math.max(1, Math.ceil(s.length / 3000));
+    for (let i = 0; i < n; i++) parts.push({ title: n > 1 ? `${k} ${i + 1}/${n}` : k, body: s.slice(i * 3000, (i + 1) * 3000) });
+  });
+  let ok = 0;
+  st.textContent = `sending 0/${parts.length}...`;
+  for (const p of parts) {
+    try {
+      const r = await fetch("https://ntfy.sh/" + topic, { method: "POST", body: p.body, headers: { Title: p.title } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      ok++;
+      st.textContent = `sent ${ok}/${parts.length}`;
+    } catch (e) {
+      st.innerHTML = `<span class="warn">failed at ${esc(p.title)}: ${esc(e.message)} (${ok} sent)</span>`;
+      return;
+    }
+  }
+  st.textContent = `done, ${ok} messages sent`;
+}
+$("sendbtn").onclick = sendReport;
+
+// Direct bridge calls. Each result is shown on screen and sent as its own small message.
+report.bridgeCalls = [];
+function ntfySend(title, body) {
+  if (!topic) return;
+  fetch("https://ntfy.sh/" + topic, { method: "POST", body, headers: { Title: title } }).catch(() => {});
+}
+function callBridge(label, fn) {
+  let res;
+  try {
+    const r = fn();
+    res = { ok: true, type: typeof r, value: (r === undefined ? "undefined" : typeof r === "object" ? JSON.stringify(r) : String(r)).slice(0, 500) };
+  } catch (e) {
+    res = { ok: false, error: String((e && e.message) || e).slice(0, 300) };
+  }
+  const entry = Object.assign({ call: label, at: new Date().toLocaleTimeString() }, res);
+  report.bridgeCalls.push(entry);
+  $("bcalls").textContent = report.bridgeCalls.map(x => JSON.stringify(x)).join("\n");
+  ntfySend("bridgeCall " + label, JSON.stringify(entry));
+}
+const B = () => window.__MetaGlassBridge;
+$("b_ver").onclick = () => callBridge("getVersion", () => B().getVersion());
+$("b_start").onclick = () => callBridge("startHandwriting", () => B().startHandwriting());
+$("b_stop").onclick = () => callBridge("stopHandwriting", () => B().stopHandwriting());
+
+// Run bridge calls from the URL so no tapping is needed on the glasses.
+// Example: ?calls=getVersion,startHandwriting,wait25,stopHandwriting
+const callMap = {
+  getVersion: () => B().getVersion(),
+  startHandwriting: () => B().startHandwriting(),
+  stopHandwriting: () => B().stopHandwriting(),
+};
+(async function runCalls() {
+  const list = (params.get("calls") || "").split(",").filter(Boolean);
+  if (!list.length) return;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  await sleep(2500);
+  for (const c of list) {
+    const w = /^wait(\d+)$/.exec(c);
+    if (w) { await sleep(Math.min(+w[1], 120) * 1000); continue; }
+    if (callMap[c]) callBridge(c, callMap[c]);
+    else ntfySend("bridgeCall " + c, JSON.stringify({ call: c, ok: false, error: "unknown call" }));
+    await sleep(1000);
+  }
+})();
+
+// Log anything native pushes into the page as injected text (passes the call through unchanged)
+let injectWrapped = false;
+function wrapInject() {
+  const o = window.__webappInjectText;
+  if (injectWrapped || typeof o !== "function") return;
+  injectWrapped = true;
+  window.__webappInjectText = function (...a) {
+    try {
+      lines.unshift(`${new Date().toLocaleTimeString()} injectText ${JSON.stringify(a).slice(0, 120)}`);
+      lines.length = Math.min(lines.length, 18);
+      $("log").textContent = lines.join("\n");
+      report.lastEvents = lines.slice();
+    } catch (e) {}
+    return o.apply(this, a);
+  };
+}
+wrapInject();
+setTimeout(wrapInject, 1000);
+setTimeout(wrapInject, 3000);
+
+if (topic) $("sendstat").textContent = "topic set, press Send report" + (params.get("auto") === "1" ? " (auto-sending once)" : "");
+
+collectAll().then(() => { if (topic && params.get("auto") === "1") sendReport(); });
+</script>
+</body>
+</html>
