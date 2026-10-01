@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glasses Probe v4</title>
+<title>Glasses Probe v5</title>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; padding: 12px; background: #000; color: #e8e8e8; font: 18px/1.35 -apple-system, system-ui, sans-serif; }
@@ -21,7 +21,7 @@
 </style>
 </head>
 <body>
-<h1>Glasses Probe v4</h1>
+<h1>Glasses Probe v5</h1>
 <div id="stamp" class="k"></div>
 
 <h2>Locale and region</h2><div id="locale"></div>
@@ -70,7 +70,7 @@ const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", 
 function collect() {
   const dtf = Intl.DateTimeFormat().resolvedOptions();
   const loc = safe(() => new Intl.Locale(navigator.language).maximize());
-  report.version = "v4";
+  report.version = "v5";
   report.time = new Date().toString();
   report.locale = {
     language: navigator.language,
@@ -289,6 +289,27 @@ const B = () => window.__MetaGlassBridge;
 $("b_ver").onclick = () => callBridge("getVersion", () => B().getVersion());
 $("b_start").onclick = () => callBridge("startHandwriting", () => B().startHandwriting());
 $("b_stop").onclick = () => callBridge("stopHandwriting", () => B().stopHandwriting());
+
+// Run bridge calls from the URL so no tapping is needed on the glasses.
+// Example: ?calls=getVersion,startHandwriting,wait25,stopHandwriting
+const callMap = {
+  getVersion: () => B().getVersion(),
+  startHandwriting: () => B().startHandwriting(),
+  stopHandwriting: () => B().stopHandwriting(),
+};
+(async function runCalls() {
+  const list = (params.get("calls") || "").split(",").filter(Boolean);
+  if (!list.length) return;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  await sleep(2500);
+  for (const c of list) {
+    const w = /^wait(\d+)$/.exec(c);
+    if (w) { await sleep(Math.min(+w[1], 120) * 1000); continue; }
+    if (callMap[c]) callBridge(c, callMap[c]);
+    else ntfySend("bridgeCall " + c, JSON.stringify({ call: c, ok: false, error: "unknown call" }));
+    await sleep(1000);
+  }
+})();
 
 // Log anything native pushes into the page as injected text (passes the call through unchanged)
 let injectWrapped = false;
