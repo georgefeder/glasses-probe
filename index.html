@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glasses Probe v3</title>
+<title>Glasses Probe v4</title>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; padding: 12px; background: #000; color: #e8e8e8; font: 18px/1.35 -apple-system, system-ui, sans-serif; }
@@ -21,7 +21,7 @@
 </style>
 </head>
 <body>
-<h1>Glasses Probe v3</h1>
+<h1>Glasses Probe v4</h1>
 <div id="stamp" class="k"></div>
 
 <h2>Locale and region</h2><div id="locale"></div>
@@ -47,6 +47,11 @@
 <h2>Input events</h2>
 <div id="log">waiting for input...</div>
 
+<h2>Bridge calls (native)</h2>
+<div class="k">Calls into Meta's bridge. Order: getVersion, startHandwriting, try writing in a box above, stopHandwriting.</div>
+<button id="b_ver">getVersion</button><button id="b_start">startHandwriting</button><button id="b_stop">stopHandwriting</button>
+<div id="bcalls" class="small"></div>
+
 <h2>Send report</h2>
 <button id="sendbtn">Send report</button>
 <div id="sendstat" class="k">needs ?t=topic in the URL</div>
@@ -65,7 +70,7 @@ const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", 
 function collect() {
   const dtf = Intl.DateTimeFormat().resolvedOptions();
   const loc = safe(() => new Intl.Locale(navigator.language).maximize());
-  report.version = "v3";
+  report.version = "v4";
   report.time = new Date().toString();
   report.locale = {
     language: navigator.language,
@@ -117,7 +122,7 @@ function globalsProbe() {
   try {
     const w = f.contentWindow;
     const base = new Set(Object.getOwnPropertyNames(w));
-    const ours = new Set([...document.querySelectorAll("[id]")].map(e => e.id).concat(["collect", "globalsProbe", "collectAll", "logEvt"]));
+    const ours = new Set([...document.querySelectorAll("[id]")].map(e => e.id).concat(["collect", "globalsProbe", "collectAll", "logEvt", "sendReport", "callBridge", "ntfySend", "wrapInject"]));
     const extra = Object.getOwnPropertyNames(window).filter(k => !base.has(k) && !ours.has(k) && !/^\d+$/.test(k));
     const nb = new Set(Object.getOwnPropertyNames(w.navigator));
     const npb = new Set(Object.getOwnPropertyNames(Object.getPrototypeOf(w.navigator)));
@@ -260,6 +265,51 @@ async function sendReport() {
   st.textContent = `done, ${ok} messages sent`;
 }
 $("sendbtn").onclick = sendReport;
+
+// Direct bridge calls. Each result is shown on screen and sent as its own small message.
+report.bridgeCalls = [];
+function ntfySend(title, body) {
+  if (!topic) return;
+  fetch("https://ntfy.sh/" + topic, { method: "POST", body, headers: { Title: title } }).catch(() => {});
+}
+function callBridge(label, fn) {
+  let res;
+  try {
+    const r = fn();
+    res = { ok: true, type: typeof r, value: (r === undefined ? "undefined" : typeof r === "object" ? JSON.stringify(r) : String(r)).slice(0, 500) };
+  } catch (e) {
+    res = { ok: false, error: String((e && e.message) || e).slice(0, 300) };
+  }
+  const entry = Object.assign({ call: label, at: new Date().toLocaleTimeString() }, res);
+  report.bridgeCalls.push(entry);
+  $("bcalls").textContent = report.bridgeCalls.map(x => JSON.stringify(x)).join("\n");
+  ntfySend("bridgeCall " + label, JSON.stringify(entry));
+}
+const B = () => window.__MetaGlassBridge;
+$("b_ver").onclick = () => callBridge("getVersion", () => B().getVersion());
+$("b_start").onclick = () => callBridge("startHandwriting", () => B().startHandwriting());
+$("b_stop").onclick = () => callBridge("stopHandwriting", () => B().stopHandwriting());
+
+// Log anything native pushes into the page as injected text (passes the call through unchanged)
+let injectWrapped = false;
+function wrapInject() {
+  const o = window.__webappInjectText;
+  if (injectWrapped || typeof o !== "function") return;
+  injectWrapped = true;
+  window.__webappInjectText = function (...a) {
+    try {
+      lines.unshift(`${new Date().toLocaleTimeString()} injectText ${JSON.stringify(a).slice(0, 120)}`);
+      lines.length = Math.min(lines.length, 18);
+      $("log").textContent = lines.join("\n");
+      report.lastEvents = lines.slice();
+    } catch (e) {}
+    return o.apply(this, a);
+  };
+}
+wrapInject();
+setTimeout(wrapInject, 1000);
+setTimeout(wrapInject, 3000);
+
 if (topic) $("sendstat").textContent = "topic set, press Send report" + (params.get("auto") === "1" ? " (auto-sending once)" : "");
 
 collectAll().then(() => { if (topic && params.get("auto") === "1") sendReport(); });
