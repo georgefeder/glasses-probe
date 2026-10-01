@@ -47,6 +47,10 @@
 <h2>Input events</h2>
 <div id="log">waiting for input...</div>
 
+<h2>Send report</h2>
+<button id="sendbtn">Send report</button>
+<div id="sendstat" class="k">needs ?t=topic in the URL</div>
+
 <h2>Full report</h2>
 <button id="showjson">Show JSON</button><button id="copyjson">Copy JSON</button>
 <pre id="json"></pre>
@@ -203,7 +207,39 @@ $("copyjson").onclick = async () => {
   catch (e) { $("json").textContent = "clipboard blocked, text below\n" + t; }
 };
 
-collectAll();
+// Send the report to a public ntfy.sh topic so it can be read from another device.
+// The topic comes from the URL (?t=...), so it never lives in the public repo.
+const params = new URLSearchParams(location.search);
+const topic = (params.get("t") || "").replace(/[^A-Za-z0-9_-]/g, "");
+async function sendReport() {
+  const st = $("sendstat");
+  if (!topic) { st.innerHTML = '<span class="warn">no topic, open the page with ?t=yourtopic</span>'; return; }
+  await collectAll();
+  const parts = [];
+  Object.entries(report).forEach(([k, v]) => {
+    const s = typeof v === "string" ? v : JSON.stringify(v);
+    const n = Math.max(1, Math.ceil(s.length / 3000));
+    for (let i = 0; i < n; i++) parts.push({ title: n > 1 ? `${k} ${i + 1}/${n}` : k, body: s.slice(i * 3000, (i + 1) * 3000) });
+  });
+  let ok = 0;
+  st.textContent = `sending 0/${parts.length}...`;
+  for (const p of parts) {
+    try {
+      const r = await fetch("https://ntfy.sh/" + topic, { method: "POST", body: p.body, headers: { Title: p.title } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      ok++;
+      st.textContent = `sent ${ok}/${parts.length}`;
+    } catch (e) {
+      st.innerHTML = `<span class="warn">failed at ${esc(p.title)}: ${esc(e.message)} (${ok} sent)</span>`;
+      return;
+    }
+  }
+  st.textContent = `done, ${ok} messages sent`;
+}
+$("sendbtn").onclick = sendReport;
+if (topic) $("sendstat").textContent = "topic set, press Send report" + (params.get("auto") === "1" ? " (auto-sending once)" : "");
+
+collectAll().then(() => { if (topic && params.get("auto") === "1") sendReport(); });
 </script>
 </body>
 </html>
